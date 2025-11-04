@@ -96,65 +96,86 @@ task.spawn(function()
 		Connection:Disconnect()
 	end
 end)
-
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
-
-
-local function AddDraggingFunctionality(DragPoint, Main)
+local function AddDraggingFunctionality(DragPoint, Main, options)
+    options = options or {}
     local Dragging = false
     local DragInput, MousePos, FramePos
     local ActiveTween
 
-    DragPoint.InputBegan:Connect(function(Input)
-        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+    local OnStart = options.OnStart
+    local OnEnd = options.OnEnd
+    local Boundary = options.Boundary
+    local ParentSize = Main.Parent.AbsoluteSize
+
+    local function GetBoundedPosition(pos)
+        if not Boundary then return pos end
+        local x = math.clamp(pos.X.Offset, Boundary.MinX or 0, Boundary.MaxX or ParentSize.X - Main.AbsoluteSize.X)
+        local y = math.clamp(pos.Y.Offset, Boundary.MinY or 0, Boundary.MaxY or ParentSize.Y - Main.AbsoluteSize.Y)
+        return UDim2.new(pos.X.Scale, x, pos.Y.Scale, y)
+    end
+
+    local function PlayTween(props, duration, style, direction)
+        TweenService:Create(Main, TweenInfo.new(duration or 0.15, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out), props):Play()
+    end
+
+    DragPoint.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             Dragging = true
-            MousePos = Input.Position
+            MousePos = input.Position
             FramePos = Main.Position
-
-            Input.Changed:Connect(function()
-                if Input.UserInputState == Enum.UserInputState.End then
-                    Dragging = false
-                end
-            end)
+            PlayTween({Size = Main.Size * 1.05}, 0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out) -- 拡大演出
+            if OnStart then pcall(OnStart) end
         end
     end)
 
-    DragPoint.InputChanged:Connect(function(Input)
-        if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
-            DragInput = Input
+    DragPoint.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            DragInput = input
         end
     end)
 
-    UserInputService.InputChanged:Connect(function(Input)
-        if Dragging and Input == DragInput then
-            local Delta = Input.Position - MousePos
-            local TargetPos = UDim2.new(
-                FramePos.X.Scale,
-                FramePos.X.Offset + Delta.X,
-                FramePos.Y.Scale,
-                FramePos.Y.Offset + Delta.Y
-            )
+    local function UpdatePosition(input)
+        if not Dragging or input ~= DragInput then return end
+        local Delta = input.Position - MousePos
+        local TargetPos = UDim2.new(
+            FramePos.X.Scale,
+            FramePos.X.Offset + Delta.X,
+            FramePos.Y.Scale,
+            FramePos.Y.Offset + Delta.Y
+        )
+        TargetPos = GetBoundedPosition(TargetPos)
 
-            if ActiveTween then
-                ActiveTween:Cancel()
-            end
-            ActiveTween = TweenService:Create(
-                Main,
-                TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-                {Position = TargetPos}
-            )
-            ActiveTween:Play()
+        if ActiveTween then ActiveTween:Cancel() end
+        ActiveTween = TweenService:Create(Main, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = TargetPos})
+        ActiveTween:Play()
+    end
+
+    UserInputService.InputChanged:Connect(UpdatePosition)
+    UserInputService.TouchMoved:Connect(UpdatePosition)
+
+    local function StopDragging()
+        if Dragging then
+            PlayTween({Size = Main.Size / 1.05}, 0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out) -- 戻る演出
+            if OnEnd then pcall(OnEnd) end
         end
-    end)
-
-    -- タッチ終了時もドラッグを止める
-    UserInputService.TouchEnded:Connect(function()
         Dragging = false
+    end
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input == DragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            StopDragging()
+        end
+    end)
+    UserInputService.TouchEnded:Connect(function(input)
+        StopDragging()
     end)
 end
 
+return AddDraggingFunctionality
 local function Create(Name, Properties, Children)
 	local Object = Instance.new(Name)
 	for i, v in next, Properties or {} do
@@ -1624,17 +1645,46 @@ local RunService = game:GetService("RunService")
 
 -- Colorpicker 開閉
 AddConnection(Click.MouseButton1Click, function()
-	Colorpicker.Toggled = not Colorpicker.Toggled
-	TweenService:Create(
-		ColorpickerFrame,
-		TweenInfo.new(.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{Size = Colorpicker.Toggled and UDim2.new(1, 0, 0, 148) or UDim2.new(1, 0, 0, 38)}
-	):Play()
-	Color.Visible = Colorpicker.Toggled
-	Hue.Visible = Colorpicker.Toggled
-	ColorpickerFrame.F.Line.Visible = Colorpicker.Toggled
-end)
+    Colorpicker.Toggled = not Colorpicker.Toggled
 
+    -- サイズTween
+    TweenService:Create(
+        ColorpickerFrame,
+        TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Size = Colorpicker.Toggled and UDim2.new(1,0,0,148) or UDim2.new(1,0,0,38)}
+    ):Play()
+
+    -- バウンドTween（少し縮んで戻る）
+    TweenService:Create(
+        ColorpickerFrame,
+        TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Size = Colorpicker.Toggled and UDim2.new(1,0,0,152) or UDim2.new(1,0,0,34)}
+    ):Play()
+
+    -- フェード演出
+    for _, obj in pairs({Color, Hue, ColorpickerFrame.F.Line}) do
+        obj.Visible = true
+        TweenService:Create(
+            obj,
+            TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {BackgroundTransparency = Colorpicker.Toggled and 0 or 1}
+        ):Play()
+    end
+
+    -- Tween終了後にVisible調整
+    delay(0.15, function()
+        for _, obj in pairs({Color, Hue, ColorpickerFrame.F.Line}) do
+            obj.Visible = Colorpicker.Toggled
+        end
+    end)
+
+    -- 矢印回転
+    TweenService:Create(
+        ColorpickerArrow, 
+        TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), 
+        {Rotation = Colorpicker.Toggled and 180 or 0}
+    ):Play()
+end)
 local function UpdateColorPicker()
 	ColorpickerBox.BackgroundColor3 = Color3.fromHSV(ColorH, ColorS, ColorV)
 	Color.BackgroundColor3 = Color3.fromHSV(ColorH, 1, 1)
